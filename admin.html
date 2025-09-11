@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>Admin Panel - Smart Parking</title>
+    <style>
+        body { 
+            font-family: Arial, sans-serif; 
+            margin: 0; 
+            padding: 20px; 
+            background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%); 
+        }
+        .container { 
+            max-width: 600px; 
+            margin: 0 auto; 
+            background: white; 
+            border-radius: 10px; 
+            padding: 30px; 
+            box-shadow: 0 10px 30px rgba(0,0,0,0.2); 
+        }
+        h1 { 
+            color: #333; 
+            text-align: center; 
+            margin-bottom: 30px; 
+        }
+        .back-link { 
+            display: inline-block; 
+            margin-bottom: 20px; 
+            padding: 8px 16px; 
+            background: #6c757d; 
+            color: white; 
+            text-decoration: none; 
+            border-radius: 4px; 
+            cursor: pointer;
+            border: none;
+        }
+        .back-link:hover { 
+            background: #5a6268; 
+        }
+        .admin-section { 
+            background: #f8f9fa; 
+            padding: 20px; 
+            border-radius: 8px; 
+            margin-bottom: 20px; 
+        }
+        .btn { 
+            padding: 10px 20px; 
+            margin: 5px; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            font-size: 14px; 
+        }
+        .btn-danger { 
+            background: #dc3545; 
+            color: white; 
+        }
+        .btn-success { 
+            background: #28a745; 
+            color: white; 
+        }
+        .btn-info { 
+            background: #17a2b8; 
+            color: white; 
+        }
+        .btn:hover { 
+            opacity: 0.8; 
+        }
+        .status-table { 
+            width: 100%; 
+            border-collapse: collapse; 
+            margin-top: 15px; 
+        }
+        .status-table th, .status-table td { 
+            padding: 10px; 
+            text-align: left; 
+            border-bottom: 1px solid #ddd; 
+        }
+        .status-table th { 
+            background: #f1f3f4; 
+        }
+        .connection-status {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            padding: 10px;
+            border-radius: 5px;
+            color: white;
+            font-weight: bold;
+        }
+        .connected {
+            background: #4CAF50;
+        }
+        .disconnected {
+            background: #f44336;
+        }
+        .ip-input {
+            margin-bottom: 20px;
+            padding: 10px;
+            background: #e3f2fd;
+            border-radius: 8px;
+        }
+        .ip-input input {
+            padding: 8px;
+            margin: 0 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 200px;
+        }
+    </style>
+    <script>
+        let esp32IP = 'YOUR_ESP32_IP_HERE'; // Replace with actual ESP32 IP
+        
+        function resetSystem() {
+            if(confirm('Are you sure you want to reset the system?')) {
+                fetch(`http://${esp32IP}/api/admin`, { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'}, 
+                    body: JSON.stringify({action: 'reset'}) 
+                })
+                .then(response => response.json())
+                .then(data => { 
+                    alert(data.message); 
+                    updateStatus(); 
+                })
+                .catch(error => {
+                    alert('Error: Could not connect to ESP32');
+                    console.error(error);
+                });
+            }
+        }
+        
+        function updateStatus() {
+            fetch(`http://${esp32IP}/api/status`)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('uptime').textContent = Math.floor(data.uptime / 60) + ' minutes';
+                    document.getElementById('detections').textContent = data.totalDetections;
+                    document.getElementById('memory').textContent = data.freeMemory + ' bytes';
+                    
+                    // Update connection status
+                    const statusDiv = document.getElementById('connection-status');
+                    statusDiv.textContent = 'Connected';
+                    statusDiv.className = 'connection-status connected';
+                })
+                .catch(error => {
+                    console.error('Connection error:', error);
+                    const statusDiv = document.getElementById('connection-status');
+                    statusDiv.textContent = 'Disconnected';
+                    statusDiv.className = 'connection-status disconnected';
+                });
+        }
+        
+        function goBack() {
+            window.history.back();
+        }
+        
+        function setESP32IP() {
+            const input = document.getElementById('ip-input');
+            const newIP = input.value.trim();
+            if (newIP && newIP !== esp32IP) {
+                esp32IP = newIP;
+                localStorage.setItem('esp32IP', newIP);
+                updateStatus();
+                alert('IP address updated to: ' + newIP);
+            }
+        }
+        
+        // Load saved IP from localStorage
+        window.onload = function() {
+            const savedIP = localStorage.getItem('esp32IP');
+            if (savedIP) {
+                esp32IP = savedIP;
+                document.getElementById('ip-input').value = savedIP;
+            }
+            updateStatus();
+            setInterval(updateStatus, 2000);
+        };
+    </script>
+</head>
+<body>
+    <div id="connection-status" class="connection-status disconnected">Connecting...</div>
+    
+    <div class='container'>
+        <button onclick="goBack()" class='back-link'>← Back to Dashboard</button>
+        <h1>🔧 Admin Control Panel</h1>
+        
+        <div class='ip-input'>
+            <strong>ESP32 IP Address:</strong>
+            <input type="text" id="ip-input" placeholder="192.168.1.100" value="YOUR_ESP32_IP_HERE">
+            <button onclick="setESP32IP()" class="btn btn-info">Update IP</button>
+        </div>
+        
+        <div class='admin-section'>
+            <h3>System Control</h3>
+            <button class='btn btn-danger' onclick='resetSystem()'>Reset System</button>
+            <button class='btn btn-info' onclick='updateStatus()'>Refresh Data</button>
+        </div>
+        
+        <div class='admin-section'>
+            <h3>System Statistics</h3>
+            <table class='status-table'>
+                <tr><th>Parameter</th><th>Value</th></tr>
+                <tr><td>System Uptime</td><td id='uptime'>0 minutes</td></tr>
+                <tr><td>Total Detections</td><td id='detections'>0</td></tr>
+                <tr><td>Free Memory</td><td id='memory'>0 bytes</td></tr>
+                <tr><td>ESP32 IP</td><td id='esp32-ip'>Not set</td></tr>
+            </table>
+        </div>
+    </div>
+    
+    <script>
+        // Update IP display
+        setInterval(() => {
+            document.getElementById('esp32-ip').textContent = esp32IP;
+        }, 1000);
+    </script>
+</body>
+</html>

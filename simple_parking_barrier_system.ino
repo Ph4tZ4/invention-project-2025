@@ -1,40 +1,34 @@
 /*
- * Simple Parking Barrier System with 3 Slots
- * ESP32 Parking System with Servo Barrier Control
+ * Smart Parking System with Web Interface
+ * ESP32 Parking System with WiFi and Web Dashboard
  * 
  * Features:
  * - 3 Infrared sensors for parking slots (A1, A2, B1)
- * - Servo motor (MG90S) as automatic barrier
- * - Push button for manual barrier control
- * - LCD 16x2 display for status
- * - Automatic barrier opening when slots available
- * - Manual barrier control with timed opening
+ * - WiFi connectivity for web access
+ * - Web interface for status monitoring
+ * - Admin control panel
+ * - Real-time parking status updates
  */
 
-#include <Wire.h>
-#include <LiquidCrystal_I2C.h>
-#include <ESP32Servo.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
 
 // ===== PIN DEFINITIONS =====
 // Infrared Sensors for 3 parking slots
 const int SENSOR_PINS[3] = {4, 5, 18}; // GPIO pins for sensors A1, A2, B1
 const int SENSOR_COUNT = 3;
 
-// Servo Motor (MG90S) - Barrier Control
-const int SERVO_PIN = 19;              // GPIO19 - Servo control pin
-Servo barrierServo;
-
-// Push Button for Manual Control
-const int BUTTON_PIN = 25;             // GPIO25 - Push button (with pull-up)
-
 // LED Indicators
 const int RED_LED_PIN = 32;            // GPIO32 - Red LED (Parking Full)
 const int GREEN_LED_PIN = 33;          // GPIO33 - Green LED (Spaces Available)
 
-// LCD I2C Configuration
-const int SDA_PIN = 21;                // GPIO21 - SDA (I2C Data)
-const int SCL_PIN = 22;                // GPIO22 - SCL (I2C Clock)
-LiquidCrystal_I2C lcd(0x27, 16, 2);   // LCD I2C Address: 0x27, Size: 16x2
+// ===== WIFI CONFIGURATION =====
+const char* ssid = "KRITTIYA";     // WiFi SSID
+const char* password = "00000000"; // WiFi password
+
+// Web Server
+WebServer server(80);
 
 // ===== SYSTEM VARIABLES =====
 bool slotOccupied[3] = {false, false, false}; // Slot occupancy status
@@ -42,31 +36,12 @@ bool previousSlotState[3] = {false, false, false}; // Previous states
 int occupiedCount = 0;                 // Number of occupied slots
 int availableSlots = 3;                // Number of available slots
 
-// Servo and Button Control
-const int BARRIER_CLOSED_ANGLE = 0;    // Servo angle when barrier is closed (0 degrees)
-const int BARRIER_OPEN_ANGLE = 90;     // Servo angle when barrier is open (90 degrees)
-bool barrierOpen = false;              // Current barrier state
-unsigned long barrierOpenTime = 0;     // Time when barrier was opened
-const unsigned long BARRIER_OPEN_DURATION = 5000; // Barrier stays open for 5 seconds
-
-// Button Control
-bool buttonPressed = false;
-bool lastButtonState = HIGH;          // Button is pulled up, so HIGH = not pressed
-unsigned long lastDebounceTime = 0;
-const unsigned long DEBOUNCE_DELAY = 50;
-
 // Timing
 unsigned long lastUpdateTime = 0;
 unsigned long systemStartTime = 0;
 unsigned long totalDetections = 0;
-unsigned long lastMemoryCleanup = 0;
-const unsigned long MEMORY_CLEANUP_INTERVAL = 30000; // Clean memory every 30 seconds
-
-// Memory management
-const unsigned long DISPLAY_UPDATE_INTERVAL = 10000; // Update display every 10 seconds (reduced frequency)
-unsigned long lastDisplayUpdate = 0;
-const unsigned long I2C_RETRY_DELAY = 1000; // Delay between I2C retries
-unsigned long lastI2CError = 0;
+unsigned long lastStatusUpdate = 0;
+const unsigned long STATUS_UPDATE_INTERVAL = 1000; // Update web status every 1 second
 
 // Parking slot names for display (using const char* to save RAM)
 const char* slotNames[3] = {"A1", "A2", "B1"};
@@ -74,23 +49,9 @@ const char* slotNames[3] = {"A1", "A2", "B1"};
 void setup() {
   // Initialize Serial Communication
   Serial.begin(115200);
-  Serial.println("\n======== Simple Parking Barrier System ========");
-  Serial.println("3-Slot Parking with Servo Barrier Control");
+  Serial.println("\n======== Smart Parking Web System ========");
+  Serial.println("3-Slot Parking with Web Interface");
   Serial.println("Initializing system...");
-  
-  // Initialize I2C and LCD
-  Wire.begin(SDA_PIN, SCL_PIN);
-  lcd.init();
-  lcd.backlight();
-  lcd.clear();
-  
-  // Display startup message on LCD
-  lcd.setCursor(0, 0);
-  lcd.print("Parking System");
-  lcd.setCursor(0, 1);
-  lcd.print("Initializing...");
-  
-  Serial.println("LCD initialized successfully!");
   
   // Initialize sensor pins
   for (int i = 0; i < SENSOR_COUNT; i++) {
@@ -107,36 +68,32 @@ void setup() {
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
   
-  // Initialize button pin with internal pull-up
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  
-  // Initialize servo
-  barrierServo.attach(SERVO_PIN);
-  barrierServo.write(BARRIER_CLOSED_ANGLE); // Start with barrier closed
-  Serial.println("Servo barrier initialized - CLOSED position");
-  
   // Initial LED state
   setSystemReadyLEDs();
+  
+  // Initialize WiFi
+  initializeWiFi();
+  
+  // Setup web server routes
+  setupWebServer();
   
   Serial.println("System initialization complete!");
   Serial.println("Parking Slot Layout:");
   Serial.println("  A1  A2    (Front Row)");
   Serial.println("  B1        (Back Row)");
   Serial.println("===============================================");
-  Serial.println("Press button to manually open barrier for 5 seconds");
+  Serial.print("Web interface available at: http://");
+  Serial.println(WiFi.localIP());
   
-  // Print initial memory status
-  printMemoryStatus();
-  
-  delay(2000); // Allow system to stabilize
+  delay(1000); // Allow system to stabilize
   systemStartTime = millis();
-  
-  // Display initial status
-  updateDisplay();
 }
 
 void loop() {
   bool stateChanged = false;
+  
+  // Handle web server requests
+  server.handleClient();
   
   // Read all sensors and check for changes
   for (int i = 0; i < SENSOR_COUNT; i++) {
@@ -158,43 +115,24 @@ void loop() {
         Serial.print("🟢 Slot ");
         Serial.print(slotNames[i]);
         Serial.println(" AVAILABLE - Vehicle left");
-        
-        // Auto-open barrier when a slot becomes available
-        if (!barrierOpen) {
-          openBarrier();
-          Serial.println("🚪 Barrier AUTO-OPENED - Slot available!");
-        }
       }
     }
   }
   
-  // Handle button press for manual barrier control
-  handleButtonPress();
-  
-  // Handle automatic barrier closing
-  handleBarrierTiming();
-  
-  // Periodic memory cleanup
-  handleMemoryCleanup();
-  
-  // LCD display enabled
-  
-  // If any state changed, update counters and display
+  // If any state changed, update counters and LEDs
   if (stateChanged) {
     updateOccupancyCounters();
     updateLEDStatus();
-    updateDisplay();
     printParkingStatus();
   }
   
-  // Update display every 10 seconds
-  if (millis() - lastDisplayUpdate > DISPLAY_UPDATE_INTERVAL) {
-    updateDisplay();
+  // Update status periodically
+  if (millis() - lastStatusUpdate > STATUS_UPDATE_INTERVAL) {
     printParkingStatus();
-    lastDisplayUpdate = millis();
+    lastStatusUpdate = millis();
   }
   
-  delay(200); // Increased delay to prevent I2C overload and excessive polling
+  delay(100); // Reduced delay for better web responsiveness
 }
 
 // ===== CORE FUNCTIONS =====
@@ -226,107 +164,256 @@ void setSystemReadyLEDs() {
   digitalWrite(GREEN_LED_PIN, HIGH);  // Green = spaces available
 }
 
-// ===== SERVO BARRIER CONTROL =====
+// ===== WIFI FUNCTIONS =====
 
-void openBarrier() {
-  if (!barrierOpen) {
-    barrierServo.write(BARRIER_OPEN_ANGLE);
-    barrierOpen = true;
-    barrierOpenTime = millis();
-    Serial.println("🚪 BARRIER OPENED");
-  }
-}
-
-void closeBarrier() {
-  if (barrierOpen) {
-    barrierServo.write(BARRIER_CLOSED_ANGLE);
-    barrierOpen = false;
-    Serial.println("🚪 BARRIER CLOSED");
-  }
-}
-
-void handleBarrierTiming() {
-  // Auto-close barrier after specified duration
-  if (barrierOpen && (millis() - barrierOpenTime >= BARRIER_OPEN_DURATION)) {
-    closeBarrier();
-  }
-}
-
-// ===== BUTTON CONTROL =====
-
-void handleButtonPress() {
-  bool reading = digitalRead(BUTTON_PIN);
+void initializeWiFi() {
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(ssid);
   
-  // Check if button state changed (for debouncing)
-  if (reading != lastButtonState) {
-    lastDebounceTime = millis();
+  WiFi.begin(ssid, password);
+  
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
   }
   
-  // If button state has been stable for debounce delay
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
-    // If button state has changed
-    if (reading != buttonPressed) {
-      buttonPressed = reading;
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("");
+    Serial.println("WiFi connected successfully!");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("");
+    Serial.println("Failed to connect to WiFi. Starting in offline mode.");
+  }
+}
+
+// ===== WEB SERVER FUNCTIONS =====
+
+void setupWebServer() {
+  // Main dashboard page
+  server.on("/", handleRoot);
+  
+  // Admin panel page
+  server.on("/admin", handleAdmin);
+  
+  // API endpoint for parking status
+  server.on("/api/status", handleStatusAPI);
+  
+  // API endpoint for admin actions
+  server.on("/api/admin", HTTP_POST, handleAdminAPI);
+  
+  // Start server
+  server.begin();
+  Serial.println("Web server started on port 80");
+}
+
+// ===== WEB PAGE HANDLERS =====
+
+void handleRoot() {
+  String html = "<!DOCTYPE html>";
+  html += "<html><head>";
+  html += "<meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Smart Parking System</title>";
+  html += "<style>";
+  html += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }";
+  html += ".container { max-width: 800px; margin: 0 auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }";
+  html += "h1 { color: #333; text-align: center; margin-bottom: 30px; }";
+  html += ".status-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 30px; }";
+  html += ".status-card { padding: 20px; border-radius: 8px; text-align: center; color: white; font-weight: bold; }";
+  html += ".available { background: #4CAF50; }";
+  html += ".occupied { background: #f44336; }";
+  html += ".parking-slots { display: grid; grid-template-columns: repeat(2, 1fr); gap: 15px; margin-bottom: 30px; }";
+  html += ".slot { padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; }";
+  html += ".slot.free { background: #e8f5e8; color: #2e7d32; border: 2px solid #4caf50; }";
+  html += ".slot.occupied { background: #ffebee; color: #c62828; border: 2px solid #f44336; }";
+  html += ".admin-link { display: block; width: 200px; margin: 20px auto; padding: 12px; background: #2196F3; color: white; text-decoration: none; border-radius: 6px; text-align: center; }";
+  html += ".admin-link:hover { background: #1976D2; }";
+  html += ".info { background: #f5f5f5; padding: 15px; border-radius: 8px; margin-top: 20px; }";
+  html += "</style>";
+  html += "<script>";
+  html += "function updateStatus() {";
+  html += "  fetch('/api/status')";
+  html += "    .then(response => response.json())";
+  html += "    .then(data => {";
+  html += "      document.getElementById('occupied').textContent = data.occupied + '/' + data.total;";
+  html += "      document.getElementById('available').textContent = data.available;";
+  html += "      for(let i = 0; i < 3; i++) {";
+  html += "        const slot = document.getElementById('slot' + i);";
+  html += "        if(data.slots[i]) {";
+  html += "          slot.className = 'slot occupied';";
+  html += "          slot.innerHTML = data.slotNames[i] + '<br>🚗 OCCUPIED';";
+  html += "        } else {";
+  html += "          slot.className = 'slot free';";
+  html += "          slot.innerHTML = data.slotNames[i] + '<br>🟢 AVAILABLE';";
+  html += "        }";
+  html += "      }";
+  html += "    });";
+  html += "}";
+  html += "setInterval(updateStatus, 1000);";
+  html += "window.onload = updateStatus;";
+  html += "</script>";
+  html += "</head><body>";
+  html += "<div class='container'>";
+  html += "<h1>🅿️ Smart Parking System</h1>";
+  html += "<div class='status-grid'>";
+  html += "<div class='status-card occupied'>";
+  html += "<h3>Occupied</h3>";
+  html += "<div id='occupied'>" + String(occupiedCount) + "/" + String(SENSOR_COUNT) + "</div>";
+  html += "</div>";
+  html += "<div class='status-card available'>";
+  html += "<h3>Available</h3>";
+  html += "<div id='available'>" + String(availableSlots) + "</div>";
+  html += "</div>";
+  html += "</div>";
+  html += "<div class='parking-slots'>";
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    html += "<div id='slot" + String(i) + "' class='slot " + (slotOccupied[i] ? "occupied" : "free") + "'>";
+    html += String(slotNames[i]) + "<br>";
+    html += slotOccupied[i] ? "🚗 OCCUPIED" : "🟢 AVAILABLE";
+    html += "</div>";
+  }
+  html += "</div>";
+  html += "<a href='/admin' class='admin-link'>🔧 Admin Panel</a>";
+  html += "<div class='info'>";
+  html += "<strong>System Info:</strong><br>";
+  html += "Uptime: " + String((millis() - systemStartTime) / 1000) + " seconds<br>";
+  html += "Total Detections: " + String(totalDetections);
+  html += "</div>";
+  html += "</div>";
+  html += "</body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleAdmin() {
+  String html = "<!DOCTYPE html>";
+  html += "<html><head>";
+  html += "<meta charset='UTF-8'>";
+  html += "<meta name='viewport' content='width=device-width, initial-scale=1.0'>";
+  html += "<title>Admin Panel - Smart Parking</title>";
+  html += "<style>";
+  html += "body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%); }";
+  html += ".container { max-width: 600px; margin: 0 auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }";
+  html += "h1 { color: #333; text-align: center; margin-bottom: 30px; }";
+  html += ".back-link { display: inline-block; margin-bottom: 20px; padding: 8px 16px; background: #6c757d; color: white; text-decoration: none; border-radius: 4px; }";
+  html += ".back-link:hover { background: #5a6268; }";
+  html += ".admin-section { background: #f8f9fa; padding: 20px; border-radius: 8px; margin-bottom: 20px; }";
+  html += ".btn { padding: 10px 20px; margin: 5px; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }";
+  html += ".btn-danger { background: #dc3545; color: white; }";
+  html += ".btn-success { background: #28a745; color: white; }";
+  html += ".btn-info { background: #17a2b8; color: white; }";
+  html += ".btn:hover { opacity: 0.8; }";
+  html += ".status-table { width: 100%; border-collapse: collapse; margin-top: 15px; }";
+  html += ".status-table th, .status-table td { padding: 10px; text-align: left; border-bottom: 1px solid #ddd; }";
+  html += ".status-table th { background: #f1f3f4; }";
+  html += "</style>";
+  html += "<script>";
+  html += "function resetSystem() {";
+  html += "  if(confirm('Are you sure you want to reset the system?')) {";
+  html += "    fetch('/api/admin', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({action: 'reset'}) })";
+  html += "      .then(response => response.json())";
+  html += "      .then(data => { alert(data.message); location.reload(); });";
+  html += "  }";
+  html += "}";
+  html += "function updateStatus() {";
+  html += "  fetch('/api/status')";
+  html += "    .then(response => response.json())";
+  html += "    .then(data => {";
+  html += "      document.getElementById('uptime').textContent = Math.floor(data.uptime / 60) + ' minutes';";
+  html += "      document.getElementById('detections').textContent = data.totalDetections;";
+  html += "      document.getElementById('memory').textContent = data.freeMemory + ' bytes';";
+  html += "    });";
+  html += "}";
+  html += "setInterval(updateStatus, 2000);";
+  html += "window.onload = updateStatus;";
+  html += "</script>";
+  html += "</head><body>";
+  html += "<div class='container'>";
+  html += "<a href='/' class='back-link'>← Back to Dashboard</a>";
+  html += "<h1>🔧 Admin Control Panel</h1>";
+  html += "<div class='admin-section'>";
+  html += "<h3>System Control</h3>";
+  html += "<button class='btn btn-danger' onclick='resetSystem()'>Reset System</button>";
+  html += "<button class='btn btn-info' onclick='location.reload()'>Refresh Data</button>";
+  html += "</div>";
+  html += "<div class='admin-section'>";
+  html += "<h3>System Statistics</h3>";
+  html += "<table class='status-table'>";
+  html += "<tr><th>Parameter</th><th>Value</th></tr>";
+  html += "<tr><td>System Uptime</td><td id='uptime'>" + String((millis() - systemStartTime) / 60000) + " minutes</td></tr>";
+  html += "<tr><td>Total Detections</td><td id='detections'>" + String(totalDetections) + "</td></tr>";
+  html += "<tr><td>Free Memory</td><td id='memory'>" + String(ESP.getFreeHeap()) + " bytes</td></tr>";
+  html += "<tr><td>WiFi Status</td><td>" + (WiFi.status() == WL_CONNECTED ? "Connected" : "Disconnected") + "</td></tr>";
+  html += "<tr><td>IP Address</td><td>" + WiFi.localIP().toString() + "</td></tr>";
+  html += "</table>";
+  html += "</div>";
+  html += "</div>";
+  html += "</body></html>";
+  
+  server.send(200, "text/html", html);
+}
+
+void handleStatusAPI() {
+  DynamicJsonDocument doc(512);
+  doc["occupied"] = occupiedCount;
+  doc["available"] = availableSlots;
+  doc["total"] = SENSOR_COUNT;
+  doc["uptime"] = (millis() - systemStartTime) / 1000;
+  doc["totalDetections"] = totalDetections;
+  doc["freeMemory"] = ESP.getFreeHeap();
+  
+  JsonArray slots = doc.createNestedArray("slots");
+  JsonArray names = doc.createNestedArray("slotNames");
+  
+  for (int i = 0; i < SENSOR_COUNT; i++) {
+    slots.add(slotOccupied[i]);
+    names.add(slotNames[i]);
+  }
+  
+  String response;
+  serializeJson(doc, response);
+  server.send(200, "application/json", response);
+}
+
+void handleAdminAPI() {
+  if (server.hasArg("plain")) {
+    DynamicJsonDocument doc(256);
+    deserializeJson(doc, server.arg("plain"));
+    
+    String action = doc["action"];
+    DynamicJsonDocument response(256);
+    
+    if (action == "reset") {
+      // Reset system counters
+      totalDetections = 0;
+      systemStartTime = millis();
       
-      // If button is pressed (LOW because of pull-up)
-      if (buttonPressed == LOW) {
-        Serial.println("🔘 BUTTON PRESSED - Manual barrier control");
-        
-        if (barrierOpen) {
-          // If barrier is open, close it immediately
-          closeBarrier();
-          Serial.println("🚪 Manual CLOSE command");
-        } else {
-          // If barrier is closed, open it for the specified duration
-          openBarrier();
-          Serial.println("🚪 Manual OPEN command - Will close in 5 seconds");
-        }
+      // Reset slot states
+      for (int i = 0; i < SENSOR_COUNT; i++) {
+        slotOccupied[i] = false;
+        previousSlotState[i] = false;
       }
-    }
-  }
-  
-  lastButtonState = reading;
-}
-
-// ===== DISPLAY FUNCTIONS =====
-
-void updateDisplay() {
-  lcd.clear();
-  
-  // Line 1: Occupancy status
-  lcd.setCursor(0, 0);
-  if (occupiedCount == 0) {
-    lcd.print("All slots free");
-  } else if (occupiedCount == SENSOR_COUNT) {
-    lcd.print("PARKING FULL!");
-  } else {
-    lcd.print(occupiedCount);
-    lcd.print("/");
-    lcd.print(SENSOR_COUNT);
-    lcd.print(" slots used");
-  }
-  
-  // Line 2: Barrier status and uptime
-  lcd.setCursor(0, 1);
-  if (barrierOpen) {
-    lcd.print("Gate:OPEN ");
-    unsigned long timeLeft = (BARRIER_OPEN_DURATION - (millis() - barrierOpenTime)) / 1000;
-    if (timeLeft > 0) {
-      lcd.print(timeLeft);
-      lcd.print("s");
+      
+      updateOccupancyCounters();
+      updateLEDStatus();
+      
+      response["success"] = true;
+      response["message"] = "System reset successfully";
+      Serial.println("System reset via admin panel");
     } else {
-      lcd.print("0s");
+      response["success"] = false;
+      response["message"] = "Unknown action";
     }
+    
+    String responseStr;
+    serializeJson(response, responseStr);
+    server.send(200, "application/json", responseStr);
   } else {
-    lcd.print("Gate:CLOSED ");
-    unsigned long uptime = (millis() - systemStartTime) / 1000;
-    if (uptime < 60) {
-      lcd.print(uptime);
-      lcd.print("s");
-    } else {
-      lcd.print(uptime / 60);
-      lcd.print("m");
-    }
+    server.send(400, "application/json", "{\"error\":\"Invalid request\"}");
   }
 }
 
@@ -356,156 +443,4 @@ void printParkingStatus() {
   Serial.println("=============================\n");
 }
 
-// ===== MEMORY MANAGEMENT FUNCTIONS =====
-
-void handleMemoryCleanup() {
-  // Perform memory cleanup every specified interval
-  if (millis() - lastMemoryCleanup >= MEMORY_CLEANUP_INTERVAL) {
-    performMemoryCleanup();
-    lastMemoryCleanup = millis();
-  }
-}
-
-void performMemoryCleanup() {
-  // Light memory cleanup without aggressive LCD operations
-  Serial.println(F("🧹 Performing light memory cleanup..."));
-  
-  // Print memory status before cleanup
-  size_t freeHeapBefore = ESP.getFreeHeap();
-  
-  // Light garbage collection without LCD operations
-  for (int i = 0; i < 3; i++) { // Reduced iterations
-    char* temp = (char*)malloc(50);
-    if (temp != NULL) {
-      free(temp);
-    }
-    delay(5); // Shorter delay
-  }
-  
-  size_t freeHeapAfter = ESP.getFreeHeap();
-  
-  // Print memory status
-  printMemoryStatus();
-  
-  Serial.print(F("Memory cleanup complete. Freed: "));
-  Serial.print(freeHeapAfter - freeHeapBefore);
-  Serial.println(F(" bytes"));
-}
-
-void printMemoryStatus() {
-  Serial.println(F("\n=== MEMORY STATUS ==="));
-  
-  // Convert bytes to GB
-  float freeHeapGB = ESP.getFreeHeap() / (1024.0 * 1024.0 * 1024.0);
-  float heapSizeGB = ESP.getHeapSize() / (1024.0 * 1024.0 * 1024.0);
-  float freePsramGB = ESP.getFreePsram() / (1024.0 * 1024.0 * 1024.0);
-  float minFreeHeapGB = ESP.getMinFreeHeap() / (1024.0 * 1024.0 * 1024.0);
-  
-  Serial.print(F("Free Heap: "));
-  Serial.print(freeHeapGB, 3);
-  Serial.println(F(" GB"));
-  
-  Serial.print(F("Heap Size: "));
-  Serial.print(heapSizeGB, 3);
-  Serial.println(F(" GB"));
-  
-  Serial.print(F("Free PSRAM: "));
-  Serial.print(freePsramGB, 3);
-  Serial.println(F(" GB"));
-  
-  Serial.print(F("Min Free Heap: "));
-  Serial.print(minFreeHeapGB, 3);
-  Serial.println(F(" GB"));
-  
-  // Calculate memory usage percentage
-  float memoryUsage = ((float)(ESP.getHeapSize() - ESP.getFreeHeap()) / ESP.getHeapSize()) * 100;
-  Serial.print(F("Memory Usage: "));
-  Serial.print(memoryUsage, 1);
-  Serial.println(F("%"));
-  
-  Serial.println(F("=====================\n"));
-}
-
-// ===== SAFE LCD FUNCTIONS =====
-
-bool initializeLCD() {
-  // Try different I2C addresses for LCD
-  int lcdAddresses[] = {0x27, 0x3F, 0x26, 0x25};
-  int numAddresses = sizeof(lcdAddresses) / sizeof(lcdAddresses[0]);
-  
-  for (int addr = 0; addr < numAddresses; addr++) {
-    Serial.print("Trying LCD address: 0x");
-    Serial.println(lcdAddresses[addr], HEX);
-    
-    Wire.beginTransmission(lcdAddresses[addr]);
-    if (Wire.endTransmission() == 0) {
-      Serial.print("LCD found at address: 0x");
-      Serial.println(lcdAddresses[addr], HEX);
-      
-      // Update LCD object with correct address
-      lcd = LiquidCrystal_I2C(lcdAddresses[addr], 16, 2);
-      
-      // Try to initialize
-      lcd.init();
-      lcd.backlight();
-      delay(200);
-      
-      // Test if LCD is working
-      lcd.clear();
-      lcd.setCursor(0, 0);
-      lcd.print("LCD Test");
-      delay(500);
-      
-      return true;
-    }
-    delay(200);
-  }
-  
-  Serial.println("❌ LCD not found on any I2C address");
-  return false;
-}
-
-bool safeLCDClear() {
-  // Simple clear without I2C checking
-  lcd.clear();
-  delay(50);
-  return true;
-}
-
-void safeLCDPrint(int col, int row, const char* text) {
-  // Simple print without I2C checking
-  lcd.setCursor(col, row);
-  lcd.print(text);
-  delay(10);
-}
-
-void testLCD() {
-  // Simple LCD test function
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("LCD Working!");
-  lcd.setCursor(0, 1);
-  lcd.print("Test OK");
-  delay(2000);
-}
-
-// ===== I2C ERROR RECOVERY =====
-
-void handleI2CErrors() {
-  // Check for I2C errors and attempt recovery
-  if (millis() - lastI2CError > I2C_RETRY_DELAY) {
-    // Try to recover I2C communication
-    Wire.end();
-    delay(100);
-    Wire.begin(SDA_PIN, SCL_PIN);
-    Wire.setClock(50000);
-    delay(100);
-    
-    // Test I2C communication
-    Wire.beginTransmission(0x27);
-    if (Wire.endTransmission() == 0) {
-      // I2C communication recovered silently
-    }
-  }
-}
 
