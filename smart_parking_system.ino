@@ -16,13 +16,12 @@
 
 // ===== PIN DEFINITIONS =====
 // Infrared Sensors for 6 parking slots
-const int SENSOR_PINS[6] = {4, 5, 16, 17, 25, 26}; // GPIO pins for sensors 1-6
+const int SENSOR_PINS[6] = {4, 5, 18, 19, 25, 26}; // GPIO pins for sensors 1-6
 const int SENSOR_COUNT = 6;
 
 // LED Indicators
-const int RED_LED_PIN = 18;    // GPIO18 - Red LED (Parking Full/Alert)
-const int GREEN_LED_PIN = 19;  // GPIO19 - Green LED (Spaces Available)
-const int BLUE_LED_PIN = 23;   // GPIO23 - Blue LED (System Status)
+const int RED_LED_PIN = 32;    // GPIO32 - Red LED (Parking Full/Alert)
+const int GREEN_LED_PIN = 33;  // GPIO33 - Green LED (Spaces Available)
 
 // LCD I2C Configuration
 const int SDA_PIN = 21;        // GPIO21 - SDA (I2C Data)
@@ -74,9 +73,8 @@ void setup() {
   // Initialize LED pins
   pinMode(RED_LED_PIN, OUTPUT);
   pinMode(GREEN_LED_PIN, OUTPUT);
-  pinMode(BLUE_LED_PIN, OUTPUT);
   
-  // Initial LED state - system ready (blue), spaces available (green)
+  // Initial LED state - spaces available (green)
   setSystemReadyLEDs();
   
   Serial.println("System initialization complete!");
@@ -161,24 +159,20 @@ void updateLEDStatus() {
     // All slots available - Green only
     digitalWrite(RED_LED_PIN, LOW);
     digitalWrite(GREEN_LED_PIN, HIGH);
-    digitalWrite(BLUE_LED_PIN, LOW);
   } else if (occupiedCount == SENSOR_COUNT) {
     // Parking full - Red only
     digitalWrite(RED_LED_PIN, HIGH);
     digitalWrite(GREEN_LED_PIN, LOW);
-    digitalWrite(BLUE_LED_PIN, LOW);
   } else {
-    // Partial occupancy - Green + Blue
+    // Partial occupancy - Green only
     digitalWrite(RED_LED_PIN, LOW);
     digitalWrite(GREEN_LED_PIN, HIGH);
-    digitalWrite(BLUE_LED_PIN, HIGH);
   }
 }
 
 void setSystemReadyLEDs() {
   digitalWrite(RED_LED_PIN, LOW);
   digitalWrite(GREEN_LED_PIN, HIGH);  // Green = spaces available
-  digitalWrite(BLUE_LED_PIN, HIGH);   // Blue = system ready
 }
 
 void updateDisplay() {
@@ -305,8 +299,6 @@ void printDetailedStatus() {
   Serial.print("💡 LED Status: ");
   if (digitalRead(RED_LED_PIN)) {
     Serial.println("🔴 RED (Parking Full)");
-  } else if (digitalRead(GREEN_LED_PIN) && digitalRead(BLUE_LED_PIN)) {
-    Serial.println("🟢🔵 GREEN+BLUE (Partial Occupancy)");
   } else if (digitalRead(GREEN_LED_PIN)) {
     Serial.println("🟢 GREEN (Spaces Available)");
   }
